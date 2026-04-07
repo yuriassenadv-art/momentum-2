@@ -78,7 +78,24 @@ def send_json_response(handler, data):
 
 def build_dashboard_data():
     now = _time.time()
+    def _ts_str(val):
+        """Convert timestamp to string if it's a float."""
+        if isinstance(val, (int, float)) and val > 1000000000:
+            return datetime.fromtimestamp(val, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        return str(val) if val else ''
+
     trades = read_json_list('trade_history.json')
+    # Normalize timestamps in all trades
+    for t in trades:
+        if isinstance(t.get('timestamp'), (int, float)):
+            t['timestamp'] = _ts_str(t['timestamp'])
+        if isinstance(t.get('entered_at'), (int, float)):
+            t['entered_at'] = _ts_str(t['entered_at'])
+        if 'asset' not in t and 'symbol' in t:
+            t['asset'] = t['symbol']
+        if 'fee_total' not in t and 'fee' in t:
+            t['fee_total'] = t['fee']
+
     exits = [t for t in trades if t.get('operation') == 'EXIT' or t.get('type') == 'EXIT']
     state_raw = read_json('state.json')
     state = state_raw.get('fsms', state_raw) if isinstance(state_raw, dict) else {}
@@ -87,7 +104,7 @@ def build_dashboard_data():
 
     # Metrics
     total_pnl_usd = sum(t.get('pnl_usd', 0) for t in exits)
-    total_fees = sum(t.get('fee_total', 0) for t in exits)
+    total_fees = sum(t.get('fee_total', t.get('fee', 0)) for t in exits)
     wins = [t for t in exits if t.get('pnl_usd', 0) > 0]
     losses = [t for t in exits if t.get('pnl_usd', 0) <= 0]
     win_rate = len(wins) / len(exits) if exits else 0
@@ -260,7 +277,7 @@ def _get_latest_analyst_report():
 
 
 def filter_history(trades, params):
-    exits = [t for t in trades if t.get('operation') == 'EXIT']
+    exits = [t for t in trades if t.get('operation') == 'EXIT' or t.get('type') == 'EXIT']
     date_from = params.get('from', [None])[0]
     date_to = params.get('to', [None])[0]
     result = params.get('result', [None])[0]
@@ -275,14 +292,40 @@ def filter_history(trades, params):
     elif result == 'loss':
         exits = [t for t in exits if t.get('pnl_usd', 0) <= 0]
     if asset:
-        exits = [t for t in exits if t.get('asset', '') == asset]
+        exits = [t for t in exits if t.get('asset', t.get('symbol', '')) == asset]
 
     total_pnl = sum(t.get('pnl_usd', 0) for t in exits)
-    total_fees = sum(t.get('fee_total', 0) for t in exits)
+    total_fees = sum(t.get('fee_total', t.get('fee', 0)) for t in exits)
     wins = len([t for t in exits if t.get('pnl_usd', 0) > 0])
 
+    # Normalize trade fields for frontend compatibility
+    normalized = []
+    for t in exits:
+        ts = t.get('timestamp', '')
+        if isinstance(ts, (int, float)):
+            from datetime import datetime, timezone
+            ts = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        entered = t.get('entered_at', '')
+        if isinstance(entered, (int, float)) and entered > 0:
+            from datetime import datetime, timezone
+            entered = datetime.fromtimestamp(entered, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+        normalized.append({
+            'asset': t.get('asset', t.get('symbol', '')),
+            'direction': t.get('direction', ''),
+            'entry_price': t.get('entry_price', 0),
+            'exit_price': t.get('exit_price', 0),
+            'pnl_pct': t.get('pnl_pct', 0),
+            'pnl_usd': t.get('pnl_usd', 0),
+            'fee_total': t.get('fee_total', t.get('fee', 0)),
+            'reason': t.get('reason', ''),
+            'timestamp': ts,
+            'entered_at': entered,
+            'tier': t.get('tier', ''),
+        })
+
     return {
-        'trades': exits,
+        'trades': normalized,
         'totals': {
             'count': len(exits), 'wins': wins,
             'losses': len(exits) - wins,
