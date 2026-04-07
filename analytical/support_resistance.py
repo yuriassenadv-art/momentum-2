@@ -90,8 +90,10 @@ def detect_levels(ohlcv_5m: list) -> dict:
     if len(ohlcv_5m) < 15:
         return {'supports': [], 'resistances': []}
 
-    highs = [float(c[2]) for c in ohlcv_5m]
-    lows = [float(c[3]) for c in ohlcv_5m]
+    def _v(c, key, idx):
+        return float(c.get(key, c.get(key[0], 0)) if isinstance(c, dict) else c[idx])
+    highs = [_v(c, 'high', 2) for c in ohlcv_5m]
+    lows = [_v(c, 'low', 3) for c in ohlcv_5m]
 
     swing_highs = _find_swing_highs(highs)
     swing_lows = _find_swing_lows(lows)
