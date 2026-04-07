@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Momentum 2 | Trading Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+    <style>
+        body { background-color: #050505; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        .card { background: linear-gradient(145deg, #0a0a0a, #111); border: 1px solid #1e293b; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .badge-long { background: rgba(34,197,94,0.15); color: #22c55e; }
+        .badge-short { background: rgba(239,68,68,0.15); color: #ef4444; }
+        .pos { color: #22c55e; }
+        .neg { color: #ef4444; }
+        .neu { color: #64748b; }
+        .metric-value { font-size: 1.75rem; font-weight: 300; font-family: 'Courier New', monospace; }
+        .metric-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; }
+        .state-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .state-active { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+        .state-flat { background: #64748b; }
+        .scanner-item { padding: 8px 12px; border: 1px solid #1e293b; border-radius: 8px; background: #0a0a0a; }
+        input, select { background: #0a0a0a; border: 1px solid #1e293b; color: #e2e8f0; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+    </style>
+</head>
+<body class="p-8">
+    <header class="border-b border-slate-800 pb-6 mb-8 flex justify-between items-center">
+        <div></div>
+        <div class="text-center">
+            <h1 class="text-2xl font-light tracking-widest text-slate-200">MOMENTUM 2</h1>
+            <div class="mt-1 text-xs text-slate-600">Scalping / Momentum — Hyperliquid Perpetuals</div>
+        </div>
+        <div class="flex items-center space-x-4">
+            <div class="text-right">
+                <div id="timer" class="text-xs text-slate-600 font-mono">10s</div>
+                <div id="updated" class="text-[9px] text-slate-700"></div>
+            </div>
+            <button onclick="cmd('pause')" class="px-4 py-2 bg-yellow-900/50 hover:bg-yellow-800 text-yellow-200 text-xs uppercase rounded">Pausar</button>
+            <button onclick="cmd('resume')" class="px-4 py-2 bg-green-900/50 hover:bg-green-800 text-green-200 text-xs uppercase rounded">Retomar</button>
+        </div>
+    </header>
+
+    <div id="kpis" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8"></div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+        <div class="card p-6 rounded-xl">
+            <h2 class="text-slate-500 mb-4 text-xs tracking-widest uppercase">Posicoes Abertas</h2>
+            <div id="positions-area"></div>
+        </div>
+        <div class="card p-6 rounded-xl flex flex-col">
+            <h2 class="text-slate-500 mb-4 text-xs tracking-widest uppercase">Performance do Dia (UTC)</h2>
+            <canvas id="chart" height="160"></canvas>
+            <div class="mt-4 pt-4 border-t border-slate-800">
+                <h3 class="text-slate-500 mb-2 text-[10px] tracking-widest uppercase">Polymarket Signal</h3>
+                <div id="polymarket" class="text-xs text-slate-400"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card p-6 rounded-xl mb-8">
+        <h2 class="text-slate-500 mb-4 text-xs tracking-widest uppercase">Scanner — Sentiment + Technicals</h2>
+        <div id="scanner" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3"></div>
+    </div>
+
+    <div class="card p-6 rounded-xl mb-8">
+        <h2 class="text-slate-500 mb-4 text-xs tracking-widest uppercase">Historico de Operacoes</h2>
+        <div class="flex flex-wrap gap-3 mb-4">
+            <div class="flex items-center gap-1"><label class="text-[9px] text-slate-500 uppercase">De</label><input type="date" id="f-from"></div>
+            <div class="flex items-center gap-1"><label class="text-[9px] text-slate-500 uppercase">Ate</label><input type="date" id="f-to"></div>
+            <select id="f-result"><option value="">Todos</option><option value="win">Ganho</option><option value="loss">Perda</option></select>
+            <select id="f-asset"><option value="">Todos Ativos</option></select>
+            <button onclick="loadHistory()" class="text-[10px] text-blue-400 hover:text-blue-300 underline">Filtrar</button>
+            <button onclick="clearFilters()" class="text-[10px] text-slate-500 hover:text-slate-300 underline">Limpar</button>
+        </div>
+        <div id="history-area"></div>
+    </div>
+
+    <script>
+    var countdown = 10;
+    setInterval(function() { countdown--; if(countdown<=0) countdown=10; document.getElementById('timer').textContent=countdown+'s'; }, 1000);
+
+    function esc(s) { var d=document.createElement('div'); d.textContent=s; return d.textContent; }
+    function pnlCls(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : 'neu'; }
+    function pnlSign(v) { return v > 0 ? '+' : ''; }
+    function fmt$(v, d) { return '$' + (v||0).toLocaleString(undefined, {minimumFractionDigits:d||2, maximumFractionDigits:d||2}); }
+    function safeHtml(s) { return DOMPurify.sanitize(s); }
+
+    function cmd(action) {
+        fetch('/api/control', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:action})});
+        setTimeout(loadAll, 1000);
+    }
+
+    var ctx = document.getElementById('chart').getContext('2d');
+    var capitalChart = new Chart(ctx, {
+        type:'line', data:{labels:[],datasets:[{label:'Capital (%)',data:[],borderColor:'#22c55e',
+        backgroundColor:'rgba(34,197,94,0.1)',fill:true,tension:0.3,pointRadius:2,pointBackgroundColor:'#22c55e',borderWidth:2}]},
+        options:{responsive:true,plugins:{legend:{labels:{color:'#64748b'}}},
+        scales:{y:{grid:{color:'#1e293b'},ticks:{color:'#64748b',callback:function(v){return v.toFixed(2)+'%';}}},
+        x:{grid:{color:'#1e293b'},ticks:{color:'#64748b',maxRotation:45,maxTicksLimit:16}}}}
+    });
+
+    function buildKpiCard(label, value, color) {
+        var card = document.createElement('div');
+        card.className = 'card p-4 rounded-xl text-center';
+        var valDiv = document.createElement('div');
+        valDiv.className = 'metric-value';
+        valDiv.style.color = color;
+        valDiv.textContent = value;
+        var lblDiv = document.createElement('div');
+        lblDiv.className = 'metric-label';
+        lblDiv.textContent = label;
+        card.appendChild(valDiv);
+        card.appendChild(lblDiv);
+        return card;
+    }
+
+    async function loadAll() {
+        try {
+            var res = await fetch('/api/dashboard');
+            var d = await res.json();
+            renderKPIs(d.metrics);
+            renderPositions(d.positions);
+            renderChart(d.chart, d.metrics.capital_pct);
+            renderScanner(d.scanner);
+            renderPolymarket(d.polymarket);
+            document.getElementById('updated').textContent = new Date().toLocaleTimeString('pt-BR');
+            countdown = 10;
+        } catch(e) { console.error('Dashboard error:', e); }
+        loadHistory();
+    }
+
+    function renderKPIs(m) {
+        var container = document.getElementById('kpis');
+        container.replaceChildren();
+
+        var kpis = [
+            {label:'Win Rate', value:(m.win_rate*100).toFixed(0)+'%', color: m.win_rate >= 0.6 ? '#22c55e' : '#ef4444'},
+            {label:'Capital %', value: pnlSign(m.capital_pct) + m.capital_pct.toFixed(2) + '%', color: m.capital_pct >= 0 ? '#22c55e' : '#ef4444'},
+            {label:'Saldo', value: fmt$(m.current_balance), color: m.current_balance >= m.sim_balance ? '#22c55e' : '#ef4444'},
+            {label:'Max Drawdown', value: '-' + m.max_drawdown_pct.toFixed(2) + '%', color: '#ef4444'},
+            {label:'Total Trades', value: String(m.total_trades), color: '#94a3b8'},
+            {label:'Open Positions', value: String(m.open_positions), color: '#3b82f6'},
+        ];
+        kpis.forEach(function(k) { container.appendChild(buildKpiCard(k.label, k.value, k.color)); });
+
+        var dp = m.daily_pnl_pct || 0;
+        var barColor = dp >= 0 ? '#3b82f6' : '#ef4444';
+        var bar = document.createElement('div');
+        bar.className = 'col-span-2 md:col-span-3 lg:col-span-6 card p-3 rounded-xl';
+        var top = document.createElement('div');
+        top.className = 'flex justify-between items-center mb-1';
+        var lbl = document.createElement('span');
+        lbl.className = 'text-[10px] text-slate-500 uppercase tracking-wider';
+        lbl.textContent = 'Dia Atual';
+        var val = document.createElement('span');
+        val.className = 'text-sm font-mono';
+        val.style.color = barColor;
+        val.textContent = pnlSign(dp)+dp.toFixed(2)+'% ('+fmt$(m.daily_pnl_usd||0,2)+') \u2014 '+(m.trades_today||0)+' trades | Fees: '+fmt$(m.total_fees_usd,2);
+        top.appendChild(lbl); top.appendChild(val);
+        var track = document.createElement('div');
+        track.className = 'w-full bg-slate-800 rounded-full h-2';
+        var fill = document.createElement('div');
+        fill.className = 'h-2 rounded-full';
+        fill.style.width = Math.min(100,Math.abs(dp)*20)+'%';
+        fill.style.background = barColor;
+        track.appendChild(fill);
+        bar.appendChild(top); bar.appendChild(track);
+        container.appendChild(bar);
+    }
+
+    function renderPositions(pos) {
+        var area = document.getElementById('positions-area');
+        area.replaceChildren();
+        if (!pos.items.length) { area.textContent = 'Nenhuma posicao aberta'; area.className = 'text-sm text-slate-600 italic py-3'; return; }
+        area.className = '';
+
+        var tbl = document.createElement('table');
+        tbl.className = 'w-full text-sm text-slate-300';
+        var thead = document.createElement('thead');
+        thead.className = 'text-xs text-slate-500 uppercase border-b border-slate-800';
+        var hr = document.createElement('tr');
+        ['Par','Dir','Entry','Current','PnL','PnL $'].forEach(function(h){
+            var th = document.createElement('th'); th.className='py-2 px-2'; th.textContent=h; hr.appendChild(th);
+        });
+        thead.appendChild(hr); tbl.appendChild(thead);
+
+        var tbody = document.createElement('tbody');
+        pos.items.forEach(function(p) {
+            var tr = document.createElement('tr'); tr.className='border-b border-slate-800/50';
+            var cls = pnlCls(p.pnl_usd);
+            var cells = [
+                {text:p.symbol, cls:'py-2 px-2 font-mono font-medium'},
+                {text:p.side, cls:'px-2', badge:true},
+                {text:fmt$(p.entry_price,2), cls:'px-2 font-mono text-slate-400'},
+                {text:fmt$(p.current_price,2), cls:'px-2 font-mono'},
+                {text:pnlSign(p.pnl_pct)+p.pnl_pct.toFixed(2)+'%', cls:'px-2 font-mono '+cls},
+                {text:pnlSign(p.pnl_usd)+fmt$(p.pnl_usd,2), cls:'px-2 font-mono '+cls},
+            ];
+            cells.forEach(function(c){
+                var td = document.createElement('td'); td.className=c.cls;
+                if(c.badge){ var sp=document.createElement('span'); sp.className='badge badge-'+(p.side==='SHORT'?'short':'long'); sp.textContent=c.text; td.appendChild(sp); }
+                else { td.textContent=c.text; }
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+        area.appendChild(tbl);
+    }
+
+    function renderChart(chart, capitalPct) {
+        capitalChart.data.labels = chart.labels;
+        capitalChart.data.datasets[0].data = chart.data;
+        var color = capitalPct >= 0 ? '#22c55e' : '#ef4444';
+        var bg = capitalPct >= 0 ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)';
+        capitalChart.data.datasets[0].borderColor = color;
+        capitalChart.data.datasets[0].backgroundColor = bg;
+        capitalChart.data.datasets[0].pointBackgroundColor = color;
+        capitalChart.update();
+    }
+
+    function renderScanner(items) {
+        var container = document.getElementById('scanner');
+        container.replaceChildren();
+        if(!items.length){ container.textContent='Scanner inativo'; return; }
+        items.forEach(function(s) {
+            var div = document.createElement('div'); div.className='scanner-item';
+            var top = document.createElement('div'); top.className='flex justify-between items-center mb-1';
+            var sym = document.createElement('span'); sym.className='font-mono text-sm font-medium'; sym.textContent=s.symbol;
+            var dot = document.createElement('span'); dot.className='state-dot '+(s.state==='Active'?'state-active':'state-flat');
+            top.appendChild(sym); top.appendChild(dot);
+            var sent = document.createElement('div'); sent.className='text-xs '+(s.sentiment>0.3?'pos':s.sentiment<-0.3?'neg':'neu');
+            sent.textContent='Sentiment: '+(s.sentiment||0).toFixed(2);
+            var tech = document.createElement('div'); tech.className='text-xs text-slate-500';
+            tech.textContent='RSI: '+(s.rsi||0).toFixed(1)+' | Vol: '+(s.volume_ratio||0).toFixed(1)+'x';
+            div.appendChild(top); div.appendChild(sent); div.appendChild(tech);
+            container.appendChild(div);
+        });
+    }
+
+    function renderPolymarket(poly) {
+        var el = document.getElementById('polymarket');
+        el.replaceChildren();
+        if (!poly || !poly.direction) { el.textContent='Aguardando sinal...'; return; }
+        var dir = document.createElement('span');
+        dir.className = (poly.direction==='bullish'?'pos':poly.direction==='bearish'?'neg':'neu')+' font-mono uppercase';
+        dir.textContent = poly.direction;
+        el.appendChild(dir);
+        var sep = document.createTextNode(' | Gemini: ');
+        el.appendChild(sep);
+        var aligned = document.createElement('span');
+        aligned.className = poly.aligned_with_gemini ? 'pos' : 'neg';
+        aligned.textContent = poly.aligned_with_gemini ? 'ALINHADO' : 'NAO ALINHADO';
+        el.appendChild(aligned);
+        var conf = document.createTextNode(' | Confianca: '+(poly.confidence||0).toFixed(2));
+        el.appendChild(conf);
+    }
+
+    async function loadHistory() {
+        var from = document.getElementById('f-from').value;
+        var to = document.getElementById('f-to').value;
+        var result = document.getElementById('f-result').value;
+        var asset = document.getElementById('f-asset').value;
+        var params = [];
+        if (from) params.push('from='+from);
+        if (to) params.push('to='+to);
+        if (result) params.push('result='+result);
+        if (asset) params.push('asset='+asset);
+        var url = '/api/history' + (params.length ? '?' + params.join('&') : '');
+        try {
+            var res = await fetch(url);
+            var d = await res.json();
+            renderHistoryTable(d.trades, d.totals);
+        } catch(e) {}
+    }
+
+    function clearFilters() {
+        document.getElementById('f-from').value = '';
+        document.getElementById('f-to').value = '';
+        document.getElementById('f-result').value = '';
+        document.getElementById('f-asset').value = '';
+        loadHistory();
+    }
+
+    function renderHistoryTable(trades, totals) {
+        var area = document.getElementById('history-area');
+        area.replaceChildren();
+        if (!trades.length) { area.textContent='Nenhum trade encontrado'; area.className='text-sm text-slate-600 italic py-3'; return; }
+        area.className='';
+
+        var tbl = document.createElement('table');
+        tbl.className = 'w-full text-sm text-slate-300';
+        var thead = document.createElement('thead');
+        thead.className = 'text-xs text-slate-500 uppercase border-b border-slate-800';
+        var hr = document.createElement('tr');
+        ['Entrada','Saida','Ativo','Dir','Entry > Exit','PnL %','PnL $','Razao'].forEach(function(h){
+            var th=document.createElement('th'); th.className='py-2 px-3'; th.textContent=h; hr.appendChild(th);
+        });
+        thead.appendChild(hr); tbl.appendChild(thead);
+
+        var tbody = document.createElement('tbody');
+        trades.forEach(function(t) {
+            var cls = pnlCls(t.pnl_usd);
+            var tr = document.createElement('tr'); tr.className='border-b border-slate-800/50';
+            var entryDisplay = (t.entered_at||'--').substring(5,16).replace('T',' ');
+            var exitDisplay = (t.timestamp||'--').substring(5,16).replace('T',' ');
+
+            function addTd(text, className) {
+                var td=document.createElement('td'); td.className=className; td.textContent=text; tr.appendChild(td);
+            }
+            addTd(entryDisplay, 'py-2 px-3 text-slate-400 text-xs font-mono');
+            addTd(exitDisplay, 'px-3 text-slate-400 text-xs font-mono');
+            addTd(t.asset, 'px-3 font-mono font-medium');
+            var dirTd=document.createElement('td'); dirTd.className='px-3';
+            var badge=document.createElement('span'); badge.className='badge badge-'+(t.direction==='SHORT'?'short':'long'); badge.textContent=t.direction;
+            dirTd.appendChild(badge); tr.appendChild(dirTd);
+            addTd(fmt$(t.entry_price,2)+' > '+fmt$(t.exit_price,2), 'px-3 font-mono text-slate-400 text-xs');
+            addTd(pnlSign(t.pnl_pct)+(t.pnl_pct||0).toFixed(4)+'%', 'px-3 font-mono '+cls);
+            addTd(pnlSign(t.pnl_usd)+fmt$(t.pnl_usd,2), 'px-3 font-mono '+cls);
+            addTd(t.reason||'--', 'px-3 text-xs text-slate-500');
+            tbody.appendChild(tr);
+        });
+        tbl.appendChild(tbody);
+
+        var tfoot = document.createElement('tfoot');
+        tfoot.className = 'border-t-2 border-slate-700';
+        var ftr = document.createElement('tr'); ftr.className='text-[10px] font-medium';
+        var ftd1=document.createElement('td'); ftd1.className='py-2 px-3 text-slate-400'; ftd1.colSpan=5;
+        ftd1.textContent=totals.count+' trades ('+totals.wins+'W/'+totals.losses+'L, '+Math.round(totals.win_rate*100)+'%)';
+        ftr.appendChild(ftd1);
+        var tcls=pnlCls(totals.pnl_usd);
+        var ftd2=document.createElement('td'); ftd2.className='px-3 font-mono '+tcls; ftd2.textContent='TOTAL';
+        ftr.appendChild(ftd2);
+        var ftd3=document.createElement('td'); ftd3.className='px-3 font-mono '+tcls; ftd3.textContent=pnlSign(totals.pnl_usd)+fmt$(totals.pnl_usd,2);
+        ftr.appendChild(ftd3);
+        var ftd4=document.createElement('td'); ftd4.className='px-3 text-slate-500'; ftd4.textContent='fees: '+fmt$(totals.fees_usd,2);
+        ftr.appendChild(ftd4);
+        tfoot.appendChild(ftr); tbl.appendChild(tfoot);
+        area.appendChild(tbl);
+    }
+
+    loadAll();
+    setInterval(loadAll, 10000);
+    </script>
+</body>
+</html>
