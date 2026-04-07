@@ -79,8 +79,9 @@ def send_json_response(handler, data):
 def build_dashboard_data():
     now = _time.time()
     trades = read_json_list('trade_history.json')
-    exits = [t for t in trades if t.get('operation') == 'EXIT']
-    state = read_json('state.json')
+    exits = [t for t in trades if t.get('operation') == 'EXIT' or t.get('type') == 'EXIT']
+    state_raw = read_json('state.json')
+    state = state_raw.get('fsms', state_raw) if isinstance(state_raw, dict) else {}
     market = read_json('market_data.json')
     live = _live_prices
 
