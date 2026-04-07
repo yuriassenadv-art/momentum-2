@@ -87,9 +87,10 @@ class AssetFSM:
 class FSMManager:
     """Manages all asset FSMs. Persists to state.json."""
 
-    def __init__(self, config: Config = None):
-        self._config = config or Config()
-        self._fsms: dict[str, AssetFSM] = {}
+    def __init__(self, config=None):
+        self._config = config if isinstance(config, Config) else Config()
+        self._fsms = {}
+        self.fsms = self._fsms  # Public access for iteration
 
     def get_or_create(self, symbol: str) -> AssetFSM:
         """Get existing FSM or create new Flat FSM for symbol."""
@@ -117,6 +118,7 @@ class FSMManager:
         self._fsms = {}
         for symbol, fsm_data in data.get('fsms', {}).items():
             self._fsms[symbol] = AssetFSM.from_dict(fsm_data)
+        self.fsms = self._fsms
 
     def save(self, path: str = None):
         """Save FSM states to JSON file.

@@ -5,6 +5,8 @@ Fetches all perpetual pairs, filters by 24h volume, and collects
 OHLCV candles in two timeframes (1m entry/exit, 5m analysis).
 No SDK — raw HTTP via requests.
 """
+from __future__ import annotations
+
 import sys
 import os
 import json

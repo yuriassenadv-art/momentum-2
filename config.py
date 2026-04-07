@@ -51,7 +51,7 @@ class Config:
 
         # Gemini Flash API
         self.gemini_api_key = os.getenv('GEMINI_API_KEY', '')
-        self.gemini_model = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+        self.gemini_model = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash-lite')
 
         # Polymarket CLOB API
         self.poly_api_key = os.getenv('POLYMARKET_API_KEY', '')

@@ -2,8 +2,8 @@
 """Momentum 2 — Master Pipeline
 
 Runs every 5 minutes. Simple flow:
-  Phase 1: Data (Scanner + News + Social + Polymarket)
-  Phase 2: Prediction (Monte Carlo + Gemini Flash)
+  Phase 1: Data (Scanner + News + Social)
+  Phase 2: Prediction (Monte Carlo + Gemini Flash + Polymarket)
   Phase 3: Analytical (RSI, MACD, Volume, Funding, S/R)
   Phase 5: Decision (Gemini + Polymarket aligned + technicals confirm)
   Phase 4: Orchestration (FSM: Flat → Active → Flat)
@@ -19,12 +19,12 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config import Config
-from data.collector import run_scanner
-from data.news_collector import run_news_collector
-from data.social_sentiment import collect_social_sentiment
-from data.briefing_generator import generate_briefing
+from data.collector import collect as run_scanner
+from data.news_collector import collect_news
+from data.social_sentiment import collect_sentiment
+from data.briefing_generator import generate_briefing, build_briefing
 from prediction.monte_carlo import run_mc_for_asset, get_sizing_factor, validate_sl
-from prediction.gemini_analyst import analyze_with_gemini
+from prediction.gemini_analyst import analyze as analyze_with_gemini
 from prediction.polymarket_client import get_polymarket_signal
 from analytical.engine import run_all_analytics
 from orchestration.fsm import FSMManager
@@ -63,15 +63,18 @@ def run_pipeline_once(cfg=None):
 
     # ── Phase 1B: News + Social ──
     print("\n[Phase 1B] News + Social intelligence...")
+    briefing_text = None
     try:
-        news_path = os.path.join(cfg.base_dir, 'news_data.json')
-        news_data = run_news_collector(news_path)
-        social_data = collect_social_sentiment()
-        briefing_text = generate_briefing(news_data, social_data, cfg.base_dir)
+        news_data = collect_news(cfg)
+        social_data = collect_sentiment(cfg)
+        briefing_text = build_briefing(news_data, social_data)
+        # Also save via generate_briefing for dashboard
+        generate_briefing(cfg)
         print(f"  Briefing: {len(briefing_text)} chars")
     except Exception as e:
         print(f"  [ERROR] News/Social: {e}")
-        briefing_text = None
+        import traceback
+        traceback.print_exc()
 
     # ── Phase 2A: Monte Carlo (all assets, ~60ms) ──
     print("\n[Phase 2A] Monte Carlo — volatility analysis...")
@@ -86,15 +89,14 @@ def run_pipeline_once(cfg=None):
     gemini_signals = {}
     if briefing_text:
         print("\n[Phase 2B] Gemini Flash — sentiment analysis...")
-        all_symbols = sorted(market_data.keys(),
-                             key=lambda s: market_data[s].get('volume_24h', 0),
-                             reverse=True)
-        gemini_signals = analyze_with_gemini(briefing_text, all_symbols) or {}
-        print(f"  Gemini: signals for {len(gemini_signals)} assets.")
+        try:
+            gemini_signals = analyze_with_gemini(market_data) or {}
+            print(f"  Gemini: signals for {len(gemini_signals)} assets.")
+        except Exception as e:
+            print(f"  [ERROR] Gemini: {e}")
 
     # ── Phase 2C: Polymarket (independent signal) ──
     print("\n[Phase 2C] Polymarket — independent signal...")
-    # Determine overall Gemini direction for alignment check
     bullish_count = sum(1 for s in gemini_signals.values()
                         if s.get('sentiment_score', 0) > 0.3)
     bearish_count = sum(1 for s in gemini_signals.values()
@@ -112,14 +114,16 @@ def run_pipeline_once(cfg=None):
                        'aligned_with_gemini': False, 'key_markets': []}
 
     # Save predictions
-    predictions = {**mc_results}
+    predictions = {}
+    for sym in mc_results:
+        predictions[sym] = mc_results[sym] if isinstance(mc_results[sym], dict) else {}
     for sym in gemini_signals:
         if sym not in predictions:
             predictions[sym] = {}
         predictions[sym]['gemini'] = gemini_signals[sym]
     predictions['_polymarket'] = poly_signal
     with open(cfg.predictions_path, 'w') as f:
-        json.dump(predictions, f, indent=2)
+        json.dump(predictions, f, indent=2, default=str)
 
     # ── Phase 3: Analytical Engine ──
     print("\n[Phase 3] Analytical engine — RSI, MACD, Volume, Funding...")
@@ -128,7 +132,7 @@ def run_pipeline_once(cfg=None):
 
     # ── Phase 5: Decision Engine ──
     print("\n[Phase 5] Decision engine — evaluating entries...")
-    mgr = FSMManager(cfg.state_path)
+    mgr = FSMManager(cfg)
     mgr.load()
 
     entries = []
@@ -137,7 +141,7 @@ def run_pipeline_once(cfg=None):
     for symbol in market_data:
         fsm = mgr.get_or_create(symbol)
         if fsm.state != 'Flat':
-            continue  # Already in a position
+            continue
 
         gem_sig = gemini_signals.get(symbol, {})
         anal = analytics.get(symbol, {})

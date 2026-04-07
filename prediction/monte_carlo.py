@@ -7,6 +7,8 @@ Geometric Brownian Motion simulation for:
 Uses only numpy. No scipy, no pandas.
 """
 
+from __future__ import annotations
+
 import sys
 import os
 
@@ -58,7 +60,7 @@ def run_mc_for_asset(
         dict with keys: prediction (prob of up), confidence, expected_range,
                         n_trials, sigma.
     """
-    closes = np.array([c['close'] for c in ohlcv], dtype=np.float64)
+    closes = np.array([c.get('close', c.get('c', 0)) for c in ohlcv], dtype=np.float64)
     if len(closes) < 10:
         return {
             'prediction': 0.5,
@@ -127,7 +129,7 @@ def validate_sl(
     Returns:
         dict with: sl_hit_rate, avg_max_drawdown, suggested_sl_adjustment.
     """
-    closes = np.array([c['close'] for c in ohlcv], dtype=np.float64)
+    closes = np.array([c.get('close', c.get('c', 0)) for c in ohlcv], dtype=np.float64)
     if len(closes) < 10:
         return {
             'sl_hit_rate': 0.0,
@@ -186,7 +188,7 @@ def get_sizing_factor(ohlcv: list[dict]) -> float:
     High volatility -> lower sizing (closer to 0.5).
     Low volatility  -> higher sizing (closer to 1.0).
     """
-    closes = np.array([c['close'] for c in ohlcv], dtype=np.float64)
+    closes = np.array([c.get('close', c.get('c', 0)) for c in ohlcv], dtype=np.float64)
     if len(closes) < 10:
         return 0.75  # Default middle value
 

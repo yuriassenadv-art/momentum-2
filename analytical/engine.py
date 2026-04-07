@@ -141,13 +141,16 @@ def analyze_asset(market_data_entry: dict) -> dict:
     candles_1m = market_data_entry.get('ohlcv_1m', [])
     funding = market_data_entry.get('funding_rate', 0.0)
 
-    # Extract OHLCV columns from 5m candles
-    closes_5m = [c[4] for c in candles_5m] if candles_5m else []
-    highs_5m = [c[2] for c in candles_5m] if candles_5m else []
-    lows_5m = [c[3] for c in candles_5m] if candles_5m else []
+    # Extract OHLCV columns from 5m candles (support both dict and list formats)
+    def _get(c, key, idx):
+        return c.get(key, c.get(key[0], 0)) if isinstance(c, dict) else c[idx]
+
+    closes_5m = [_get(c, 'close', 4) for c in candles_5m] if candles_5m else []
+    highs_5m = [_get(c, 'high', 2) for c in candles_5m] if candles_5m else []
+    lows_5m = [_get(c, 'low', 3) for c in candles_5m] if candles_5m else []
 
     # Extract volumes from 1m candles
-    volumes_1m = [c[5] for c in candles_1m] if candles_1m else []
+    volumes_1m = [_get(c, 'volume', 5) for c in candles_1m] if candles_1m else []
 
     rsi = calculate_rsi(closes_5m)
     macd_data = calculate_macd(closes_5m)

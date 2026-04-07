@@ -5,6 +5,8 @@ and generates an independent directional signal. This signal is NOT merged with
 Gemini — it stands alone and can optionally report alignment.
 """
 
+from __future__ import annotations
+
 import sys
 import os
 import time

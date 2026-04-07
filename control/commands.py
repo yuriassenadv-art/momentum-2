@@ -4,6 +4,8 @@
 Supports pause, resume, and status commands.
 Reads cmd.json from base_dir, processes it, and deletes after handling.
 """
+from __future__ import annotations
+
 import json
 import os
 import sys
