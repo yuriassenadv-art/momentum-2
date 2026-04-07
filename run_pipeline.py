@@ -31,6 +31,7 @@ from orchestration.fsm import FSMManager
 from decision.engine import should_enter
 from execution.executor import execute_entry, get_balance
 from audit.logger import generate_audit
+from audit.analyst import generate_performance_report, print_report
 from control.commands import check_for_commands, is_paused
 
 CYCLE_INTERVAL = 5 * 60  # 5 minutes
@@ -192,6 +193,14 @@ def run_pipeline_once(cfg=None):
             trades = json.load(f)
     state = {s: f.to_dict() for s, f in mgr.fsms.items()}
     generate_audit(state, trades, cfg.audit_log_path)
+
+    # ── Phase 8: Performance Analyst (observation only) ──
+    print("\n[Phase 8] Performance Analyst...")
+    try:
+        report = generate_performance_report(cfg)
+        print_report(report)
+    except Exception as e:
+        print(f"  [WARN] Analyst: {e}")
 
     active = mgr.active_positions()
     print(f"\n{'='*60}")

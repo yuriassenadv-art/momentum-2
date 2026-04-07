@@ -233,9 +233,29 @@ def build_dashboard_data():
         'chart': {'labels': chart_labels, 'data': chart_data},
         'scanner': scanner[:20],
         'polymarket': poly,
+        'analyst': _get_latest_analyst_report(),
         '_meta': {
             'prices_age_sec': round(now - _live_prices_ts, 0) if _live_prices_ts else -1,
         },
+    }
+
+
+def _get_latest_analyst_report():
+    """Get the latest performance analyst report."""
+    reports = read_json_list('performance_reports.json')
+    if not reports:
+        return None
+    latest = reports[-1]
+    return {
+        'narrative': latest.get('narrative', ''),
+        'summary': latest.get('summary', {}),
+        'by_tier': latest.get('by_tier', {}),
+        'by_direction': latest.get('by_direction', {}),
+        'exit_reasons': latest.get('exit_reasons', {}),
+        'streaks': latest.get('streaks', {}),
+        'top_winners': latest.get('by_asset', {}).get('top_winners', []),
+        'top_losers': latest.get('by_asset', {}).get('top_losers', []),
+        'timestamp': latest.get('timestamp', ''),
     }
 
 
