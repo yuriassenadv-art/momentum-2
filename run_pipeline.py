@@ -154,13 +154,14 @@ def run_pipeline_once(cfg=None):
                 'symbol': symbol,
                 'direction': result['direction'],
                 'sizing_factor': result['sizing_factor'],
+                'tier': result.get('tier', 'STANDARD'),
                 'reason': result['reason'],
             })
-            print(f"  -> {symbol} {result['direction']}: {result['reason']}")
-        elif result.get('reason') and 'sentiment' in result.get('reason', '').lower():
+            print(f"  -> {symbol} {result['direction']} [{result.get('tier')}]: {result['reason']}")
+        elif 'no_signal' not in result.get('reason', ''):
             vetoed += 1
 
-    print(f"  {len(entries)} entries, {vetoed} vetoed by sentiment.")
+    print(f"  {len(entries)} entries, {vetoed} blocked.")
 
     # ── Phase 6: Execute entries ──
     if entries:
@@ -170,10 +171,14 @@ def run_pipeline_once(cfg=None):
                 entry['symbol'], entry['direction'],
                 entry['sizing_factor'], cfg, cfg.dry_run
             )
-            if result['status'] == 'success':
+            if result.get('status') in ('success', 'FILLED'):
+                # Log the trade
+                from execution.executor import log_trade
+                log_trade(result, cfg.trade_history_path)
+                # Update FSM
                 fsm = mgr.get_or_create(entry['symbol'])
-                fsm.enter(result['entry_price'], result['size'], entry['direction'])
-                print(f"  {entry['symbol']} {entry['direction']} @ "
+                fsm.enter(result['entry_price'], result['size'], entry['direction'], entry['tier'])
+                print(f"  {entry['symbol']} {entry['direction']} [{entry['tier']}] @ "
                       f"${result['entry_price']:,.2f} | size={result['size']:.6f}")
         mgr.save()
     else:

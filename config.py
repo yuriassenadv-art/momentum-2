@@ -38,9 +38,17 @@ class Config:
         self.gemini_threshold = 0.5       # |sentiment| > 0.5 to enter
         self.volume_confirmation = 1.5    # Volume > 1.5x average
 
-        # RSI bounds (don't enter in extremes)
+        # RSI bounds
         self.rsi_overbought = 75
         self.rsi_oversold = 25
+
+        # Sizing per tier
+        self.tier_sizing = {
+            'FULL': 1.0,       # 5% × 3x
+            'STANDARD': 0.6,   # 3% × 3x
+            'MOMENTUM': 0.4,   # 2% × 3x
+            'SCOUT': 0.3,      # 1.5% × 3x
+        }
 
         # Pipeline timing
         self.pipeline_interval = 5 * 60   # 5 minutes

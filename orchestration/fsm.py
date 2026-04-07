@@ -23,18 +23,10 @@ class AssetFSM:
         self.entry_price = 0.0
         self.size = 0.0
         self.entered_at = 0.0       # timestamp
+        self.tier = 'STANDARD'      # FULL, STANDARD, MOMENTUM, SCOUT
 
-    def enter(self, price: float, size: float, direction: str):
-        """Transition from Flat to Active.
-
-        Args:
-            price: Entry price.
-            size: Position size in base asset.
-            direction: 'LONG' or 'SHORT'.
-
-        Raises:
-            ValueError: If already Active or invalid direction.
-        """
+    def enter(self, price: float, size: float, direction: str, tier: str = 'STANDARD'):
+        """Transition from Flat to Active."""
         if self.state != 'Flat':
             raise ValueError(f'{self.symbol}: cannot enter, already {self.state}')
         if direction not in ('LONG', 'SHORT'):
@@ -45,6 +37,7 @@ class AssetFSM:
         self.entry_price = price
         self.size = size
         self.entered_at = time.time()
+        self.tier = tier
 
     def exit(self):
         """Transition from Active to Flat. Resets all fields.
@@ -60,6 +53,7 @@ class AssetFSM:
         self.entry_price = 0.0
         self.size = 0.0
         self.entered_at = 0.0
+        self.tier = 'STANDARD'
 
     def to_dict(self) -> dict:
         """Serialize FSM state to dict."""
@@ -70,6 +64,7 @@ class AssetFSM:
             'entry_price': self.entry_price,
             'size': self.size,
             'entered_at': self.entered_at,
+            'tier': self.tier,
         }
 
     @classmethod
@@ -81,6 +76,7 @@ class AssetFSM:
         fsm.entry_price = data.get('entry_price', 0.0)
         fsm.size = data.get('size', 0.0)
         fsm.entered_at = data.get('entered_at', 0.0)
+        fsm.tier = data.get('tier', 'STANDARD')
         return fsm
 
 

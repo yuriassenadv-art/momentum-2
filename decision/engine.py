@@ -1,14 +1,49 @@
 # momentum-2/decision/engine.py
-"""Decision Engine — Entry and exit logic.
+"""Decision Engine — 3-tier entry + aggressive scalping exits.
 
-All conditions must pass for entry. Any single condition triggers exit.
-No adaptive weights, no ML — pure rule-based gating.
+ENTRY TIERS (any tier can trigger entry):
+  FULL (100% sizing):     Gemini + Polymarket aligned + technicals
+  STANDARD (60% sizing):  Gemini strong + technicals (no Polymarket needed)
+  SCOUT (30% sizing):     Technicals alone (RSI extreme + Volume high + Funding)
+
+EXIT RULES:
+  FULL/STANDARD: RSI inverts zone OR MACD crosses against OR SL -3%
+  SCOUT:         Profit > 0.3% OR RSI/MACD against OR SL -3%
+
+Philosophy: Polymarket is an AMPLIFIER, not a gate.
+The system must generate 20-30+ trades/day to hit 3% daily target.
 """
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from config import Config
+
+
+def _determine_direction(gemini_signal, analytics):
+    """Determine trade direction from available signals.
+
+    Priority: Gemini sentiment > RSI extremes > neutral.
+    """
+    sentiment = gemini_signal.get('sentiment', 0.0) if gemini_signal else 0.0
+
+    if abs(sentiment) > 0.2:
+        return 'LONG' if sentiment > 0 else 'SHORT'
+
+    # Fallback: RSI extremes for SCOUT trades
+    rsi = analytics.get('rsi', 50.0)
+    if rsi < 25:
+        return 'LONG'   # Oversold → bounce expected
+    if rsi > 75:
+        return 'SHORT'  # Overbought → pullback expected
+
+    # Mild sentiment
+    if sentiment > 0:
+        return 'LONG'
+    if sentiment < 0:
+        return 'SHORT'
+
+    return 'LONG'  # Default
 
 
 def should_enter(
@@ -19,82 +54,113 @@ def should_enter(
     mc_result: dict,
     config: Config,
 ) -> dict:
-    """Decide whether to enter a position.
-
-    All conditions must be True to enter.
-
-    Args:
-        symbol: Asset symbol.
-        gemini_signal: Dict with 'sentiment' float (-1 to 1).
-        poly_signal: Dict with 'aligned_with_gemini' bool.
-        analytics: Dict from analytical engine with rsi, volume_ratio,
-                   funding_rate, etc.
-        mc_result: Dict from Monte Carlo with 'sizing_factor' (0.5-1.0)
-                   and 'sl_hit_rate' float.
-        config: Config instance.
+    """Decide whether to enter a position using 3-tier conviction.
 
     Returns:
-        Dict with enter (bool), direction (str), sizing_factor (float),
-        reason (str).
+        Dict with enter, direction, sizing_factor, tier, reason.
     """
-    reasons = []
-
-    # --- 1. Gemini sentiment must exceed threshold ---
-    sentiment = gemini_signal.get('sentiment', 0.0)
-    if abs(sentiment) <= config.gemini_threshold:
-        reasons.append(f'gemini_weak: |{sentiment:.2f}| <= {config.gemini_threshold}')
-
-    direction = 'LONG' if sentiment > 0 else 'SHORT'
-
-    # --- 2. Polymarket alignment ---
-    if not poly_signal.get('aligned_with_gemini', False):
-        reasons.append('poly_misaligned')
-
-    # --- 3. RSI not in extreme zone ---
+    sentiment = gemini_signal.get('sentiment', 0.0) if gemini_signal else 0.0
+    poly_aligned = poly_signal.get('aligned_with_gemini', False) if poly_signal else False
     rsi = analytics.get('rsi', 50.0)
-    if direction == 'LONG':
-        if rsi < config.rsi_oversold or rsi > config.rsi_overbought:
-            reasons.append(f'rsi_extreme: {rsi:.1f} outside [{config.rsi_oversold}-{config.rsi_overbought}]')
-    else:  # SHORT
-        # For shorts: inverted — RSI should be between overbought..oversold inverted
-        # i.e., RSI should NOT be in extreme low (oversold) for shorts
-        if rsi < config.rsi_oversold or rsi > config.rsi_overbought:
-            reasons.append(f'rsi_extreme: {rsi:.1f} outside [{config.rsi_oversold}-{config.rsi_overbought}]')
-
-    # --- 4. Volume confirmation ---
     vol_ratio = analytics.get('volume_ratio', 0.0)
-    if vol_ratio < config.volume_confirmation:
-        reasons.append(f'vol_low: {vol_ratio:.2f} < {config.volume_confirmation}')
-
-    # --- 5. Funding rate alignment ---
     funding = analytics.get('funding_rate', 0.0)
-    if direction == 'LONG' and funding > 0:
-        reasons.append(f'funding_against_long: {funding:.6f}')
-    elif direction == 'SHORT' and funding < 0:
-        reasons.append(f'funding_against_short: {funding:.6f}')
+    mc_sizing = mc_result.get('sizing_factor', 0.7) if mc_result else 0.7
 
-    # --- 6. Monte Carlo sizing factor ---
-    sizing_factor = mc_result.get('sizing_factor', 0.5)
-    sizing_factor = max(0.5, min(1.0, sizing_factor))
+    direction = _determine_direction(gemini_signal, analytics)
 
-    # --- 7. Monte Carlo SL validation ---
-    sl_hit_rate = mc_result.get('sl_hit_rate', 1.0)
-    if sl_hit_rate >= 0.40:
-        reasons.append(f'mc_sl_risky: sl_hit_rate={sl_hit_rate:.2f} >= 0.40')
+    # Funding alignment check (soft — not a hard gate)
+    funding_ok = True
+    if direction == 'LONG' and funding > 0.001:
+        funding_ok = False
+    elif direction == 'SHORT' and funding < -0.001:
+        funding_ok = False
 
-    if reasons:
+    # RSI not in counter-extreme (don't buy at top, don't short at bottom)
+    rsi_ok = True
+    if direction == 'LONG' and rsi > 75:
+        rsi_ok = False
+    elif direction == 'SHORT' and rsi < 25:
+        rsi_ok = False
+
+    # ── TIER 1: FULL (100% sizing) ──
+    # Gemini strong + Polymarket aligned + Volume ok
+    if (abs(sentiment) >= config.gemini_threshold
+            and poly_aligned
+            and vol_ratio >= 1.2
+            and rsi_ok):
         return {
-            'enter': False,
+            'enter': True,
             'direction': direction,
-            'sizing_factor': sizing_factor,
-            'reason': '; '.join(reasons),
+            'sizing_factor': min(1.0, mc_sizing),
+            'tier': 'FULL',
+            'reason': f'FULL: sent={sentiment:+.2f} poly=aligned vol={vol_ratio:.1f}x rsi={rsi:.0f}',
         }
 
+    # ── TIER 2: STANDARD (60% sizing) ──
+    # Gemini strong + Volume ok (no Polymarket needed)
+    if (abs(sentiment) >= config.gemini_threshold
+            and vol_ratio >= 1.3
+            and rsi_ok):
+        return {
+            'enter': True,
+            'direction': direction,
+            'sizing_factor': min(0.6, mc_sizing * 0.6),
+            'tier': 'STANDARD',
+            'reason': f'STANDARD: sent={sentiment:+.2f} vol={vol_ratio:.1f}x rsi={rsi:.0f}',
+        }
+
+    # ── TIER 3: SCOUT (30% sizing) ──
+    # Technicals only — RSI extreme + Volume high + Funding confirms
+    rsi_extreme_long = rsi < 25  # Oversold
+    rsi_extreme_short = rsi > 75  # Overbought
+
+    if rsi_extreme_long and vol_ratio >= 1.5 and funding_ok:
+        return {
+            'enter': True,
+            'direction': 'LONG',
+            'sizing_factor': 0.3,
+            'tier': 'SCOUT',
+            'reason': f'SCOUT: rsi={rsi:.0f}(oversold) vol={vol_ratio:.1f}x funding={funding:.6f}',
+        }
+
+    if rsi_extreme_short and vol_ratio >= 1.5 and funding_ok:
+        return {
+            'enter': True,
+            'direction': 'SHORT',
+            'sizing_factor': 0.3,
+            'tier': 'SCOUT',
+            'reason': f'SCOUT: rsi={rsi:.0f}(overbought) vol={vol_ratio:.1f}x funding={funding:.6f}',
+        }
+
+    # ── TIER 4: MOMENTUM (40% sizing) ──
+    # Gemini has mild sentiment (>0.3) + any volume above average
+    if (abs(sentiment) >= 0.3
+            and vol_ratio >= 1.0
+            and rsi_ok
+            and funding_ok):
+        return {
+            'enter': True,
+            'direction': direction,
+            'sizing_factor': 0.4,
+            'tier': 'MOMENTUM',
+            'reason': f'MOMENTUM: sent={sentiment:+.2f} vol={vol_ratio:.1f}x rsi={rsi:.0f}',
+        }
+
+    # ── No entry ──
+    blockers = []
+    if abs(sentiment) < 0.3:
+        blockers.append(f'sent_weak={sentiment:+.2f}')
+    if vol_ratio < 1.0:
+        blockers.append(f'vol_low={vol_ratio:.1f}x')
+    if not rsi_ok:
+        blockers.append(f'rsi_counter={rsi:.0f}')
+
     return {
-        'enter': True,
+        'enter': False,
         'direction': direction,
-        'sizing_factor': sizing_factor,
-        'reason': 'all_gates_passed',
+        'sizing_factor': 0,
+        'tier': 'NONE',
+        'reason': '; '.join(blockers) if blockers else 'no_signal',
     }
 
 
@@ -106,22 +172,15 @@ def should_exit(
     current_price: float,
     direction: str,
     config: Config,
+    tier: str = 'STANDARD',
 ) -> dict:
     """Decide whether to exit a position.
 
-    Any single condition triggers exit.
+    SCOUT exits are faster (profit > 0.3% is enough).
+    FULL/STANDARD let winners run until RSI/MACD invalidate.
 
     Args:
-        symbol: Asset symbol.
-        analytics_current: Current analytics dict (rsi, macd, macd_signal).
-        analytics_previous: Previous cycle analytics dict.
-        entry_price: Position entry price.
-        current_price: Current market price.
-        direction: 'LONG' or 'SHORT'.
-        config: Config instance.
-
-    Returns:
-        Dict with exit (bool), reason (str).
+        tier: 'FULL', 'STANDARD', 'SCOUT', or 'MOMENTUM'.
     """
     rsi_now = analytics_current.get('rsi', 50.0)
     rsi_prev = analytics_previous.get('rsi', 50.0)
@@ -130,34 +189,39 @@ def should_exit(
     macd_prev = analytics_previous.get('macd', 0.0)
     macd_signal_prev = analytics_previous.get('macd_signal', 0.0)
 
-    # --- 1. RSI zone inversion ---
-    if direction == 'LONG':
-        # RSI crosses 70 downward
-        if rsi_prev >= 70 and rsi_now < 70:
-            return {'exit': True, 'reason': f'rsi_cross_down: {rsi_prev:.1f} -> {rsi_now:.1f}'}
-    else:  # SHORT
-        # RSI crosses 30 upward
-        if rsi_prev <= 30 and rsi_now > 30:
-            return {'exit': True, 'reason': f'rsi_cross_up: {rsi_prev:.1f} -> {rsi_now:.1f}'}
-
-    # --- 2. MACD crosses against direction ---
-    if direction == 'LONG':
-        # MACD was above signal, now below
-        if macd_prev >= macd_signal_prev and macd_now < macd_signal_now:
-            return {'exit': True, 'reason': f'macd_bearish_cross: macd={macd_now:.6f} < signal={macd_signal_now:.6f}'}
-    else:  # SHORT
-        # MACD was below signal, now above
-        if macd_prev <= macd_signal_prev and macd_now > macd_signal_now:
-            return {'exit': True, 'reason': f'macd_bullish_cross: macd={macd_now:.6f} > signal={macd_signal_now:.6f}'}
-
-    # --- 3. Emergency stop-loss ---
+    # PnL calculation
     if entry_price > 0:
         if direction == 'LONG':
             pnl_pct = (current_price - entry_price) / entry_price
         else:
             pnl_pct = (entry_price - current_price) / entry_price
+    else:
+        pnl_pct = 0.0
 
-        if pnl_pct <= -config.sl_emergency_pct:
-            return {'exit': True, 'reason': f'sl_emergency: pnl={pnl_pct:.4f} <= -{config.sl_emergency_pct}'}
+    # --- 1. Emergency stop-loss (all tiers) ---
+    if pnl_pct <= -config.sl_emergency_pct:
+        return {'exit': True, 'reason': f'SL_EMERGENCY: pnl={pnl_pct*100:+.2f}%'}
 
-    return {'exit': False, 'reason': 'hold'}
+    # --- 2. SCOUT/MOMENTUM quick profit take ---
+    if tier in ('SCOUT', 'MOMENTUM') and pnl_pct >= 0.003:  # +0.3%
+        return {'exit': True, 'reason': f'SCOUT_TP: pnl={pnl_pct*100:+.2f}% (>{0.3}%)'}
+
+    # --- 3. RSI zone inversion ---
+    if direction == 'LONG' and rsi_prev >= 70 and rsi_now < 70:
+        return {'exit': True, 'reason': f'RSI_CROSS_DOWN: {rsi_prev:.0f}->{rsi_now:.0f}'}
+
+    if direction == 'SHORT' and rsi_prev <= 30 and rsi_now > 30:
+        return {'exit': True, 'reason': f'RSI_CROSS_UP: {rsi_prev:.0f}->{rsi_now:.0f}'}
+
+    # --- 4. MACD crosses against ---
+    if direction == 'LONG' and macd_prev >= macd_signal_prev and macd_now < macd_signal_now:
+        return {'exit': True, 'reason': f'MACD_BEARISH: macd crossed below signal'}
+
+    if direction == 'SHORT' and macd_prev <= macd_signal_prev and macd_now > macd_signal_now:
+        return {'exit': True, 'reason': f'MACD_BULLISH: macd crossed above signal'}
+
+    # --- 5. All tiers: take profit at +1.5% (don't be greedy) ---
+    if pnl_pct >= 0.015:
+        return {'exit': True, 'reason': f'TP_MAX: pnl={pnl_pct*100:+.2f}% (>1.5%)'}
+
+    return {'exit': False, 'reason': f'hold: pnl={pnl_pct*100:+.2f}%'}
