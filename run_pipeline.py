@@ -25,7 +25,7 @@ from data.social_sentiment import collect_sentiment
 from data.briefing_generator import generate_briefing, build_briefing
 from prediction.monte_carlo import run_mc_for_asset, get_sizing_factor, validate_sl
 from prediction.gemini_analyst import analyze as analyze_with_gemini
-from prediction.polymarket_client import get_polymarket_signal
+from prediction.market_data_client import get_market_signal
 from analytical.engine import run_all_analytics
 from orchestration.fsm import FSMManager
 from decision.engine import should_enter
@@ -96,23 +96,20 @@ def run_pipeline_once(cfg=None):
         except Exception as e:
             print(f"  [ERROR] Gemini: {e}")
 
-    # ── Phase 2C: Polymarket (independent signal) ──
-    print("\n[Phase 2C] Polymarket — independent signal...")
-    bullish_count = sum(1 for s in gemini_signals.values()
-                        if s.get('sentiment_score', 0) > 0.3)
-    bearish_count = sum(1 for s in gemini_signals.values()
-                        if s.get('sentiment_score', 0) < -0.3)
-    gemini_direction = 'bullish' if bullish_count > bearish_count else (
-        'bearish' if bearish_count > bullish_count else 'neutral')
-
+    # ── Phase 2C: Market Data (independent crypto signal) ──
+    print("\n[Phase 2C] Market Data — crypto macro signal...")
     try:
-        poly_signal = get_polymarket_signal(gemini_direction)
-        print(f"  Polymarket: {poly_signal.get('direction', 'N/A')}, "
-              f"aligned={poly_signal.get('aligned_with_gemini', False)}")
+        market_signal = get_market_signal()
+        regime = market_signal.get('market_regime', 'unknown')
+        direction = market_signal.get('direction', 'neutral')
+        score = market_signal.get('score', 0)
+        fg = market_signal.get('fear_greed', {}).get('value', 0)
+        print(f"  Market: {direction} (score={score:+.2f}) | "
+              f"Regime: {regime} | F&G: {fg}")
     except Exception as e:
-        print(f"  [WARN] Polymarket: {e}")
-        poly_signal = {'direction': 'neutral', 'confidence': 0,
-                       'aligned_with_gemini': False, 'key_markets': []}
+        print(f"  [WARN] Market Data: {e}")
+        market_signal = {'direction': 'neutral', 'confidence': 0,
+                         'score': 0, 'market_regime': 'unknown'}
 
     # Save predictions
     predictions = {}
@@ -122,7 +119,7 @@ def run_pipeline_once(cfg=None):
         if sym not in predictions:
             predictions[sym] = {}
         predictions[sym]['gemini'] = gemini_signals[sym]
-    predictions['_polymarket'] = poly_signal
+    predictions['_market'] = market_signal
     with open(cfg.predictions_path, 'w') as f:
         json.dump(predictions, f, indent=2, default=str)
 
@@ -148,7 +145,7 @@ def run_pipeline_once(cfg=None):
         anal = analytics.get(symbol, {})
         mc = mc_results.get(symbol, {})
 
-        result = should_enter(symbol, gem_sig, poly_signal, anal, mc, cfg)
+        result = should_enter(symbol, gem_sig, market_signal, anal, mc, cfg)
 
         if result['enter']:
             entries.append({

@@ -200,8 +200,8 @@ def build_dashboard_data():
         })
     scanner.sort(key=lambda x: abs(x.get('sentiment', 0)), reverse=True)
 
-    # Polymarket signal
-    poly = predictions.get('_polymarket', {})
+    # Market signal (replaced Polymarket)
+    market_sig = predictions.get('_market', {})
 
     # Daily PnL
     exits_today = [t for t in exits if t.get('timestamp', '').startswith(today)]
@@ -232,7 +232,7 @@ def build_dashboard_data():
         },
         'chart': {'labels': chart_labels, 'data': chart_data},
         'scanner': scanner[:20],
-        'polymarket': poly,
+        'market_signal': market_sig,
         'analyst': _get_latest_analyst_report(),
         '_meta': {
             'prices_age_sec': round(now - _live_prices_ts, 0) if _live_prices_ts else -1,

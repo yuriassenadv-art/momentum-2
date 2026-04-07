@@ -49,7 +49,7 @@ def _determine_direction(gemini_signal, analytics):
 def should_enter(
     symbol: str,
     gemini_signal: dict,
-    poly_signal: dict,
+    market_signal: dict,
     analytics: dict,
     mc_result: dict,
     config: Config,
@@ -59,11 +59,13 @@ def should_enter(
     Designed for high trade frequency: relaxed gates, controlled via sizing.
     """
     sentiment = gemini_signal.get('sentiment', 0.0) if gemini_signal else 0.0
-    # Handle nested Gemini response format
     if sentiment == 0.0 and gemini_signal:
         sentiment = gemini_signal.get('sentiment_score', 0.0)
 
-    poly_aligned = poly_signal.get('aligned_with_gemini', False) if poly_signal else False
+    # Market data signal (replaces Polymarket)
+    mkt_direction = market_signal.get('direction', 'neutral') if market_signal else 'neutral'
+    mkt_score = market_signal.get('score', 0) if market_signal else 0
+    mkt_regime = market_signal.get('market_regime', 'unknown') if market_signal else 'unknown'
     rsi = analytics.get('rsi', 50.0)
     vol_ratio = analytics.get('volume_ratio', 0.0)
     funding = analytics.get('funding_rate', 0.0)
@@ -87,25 +89,33 @@ def should_enter(
     elif direction == 'SHORT' and macd < macd_signal:
         macd_confirms = True
 
+    # Market alignment: Gemini direction matches market macro direction
+    mkt_aligned = (
+        (direction == 'LONG' and mkt_direction == 'bullish') or
+        (direction == 'SHORT' and mkt_direction == 'bearish')
+    )
+
     # ── TIER 1: FULL (100%) ──
+    # Gemini strong + Market macro aligned + RSI ok
     if (abs(sentiment) >= 0.5
-            and poly_aligned
+            and mkt_aligned
             and not rsi_counter):
         return {
             'enter': True, 'direction': direction,
             'sizing_factor': min(1.0, mc_sizing),
             'tier': 'FULL',
-            'reason': f'FULL: sent={sentiment:+.2f} poly=Y rsi={rsi:.0f}',
+            'reason': f'FULL: sent={sentiment:+.2f} mkt={mkt_direction}({mkt_score:+.2f}) rsi={rsi:.0f}',
         }
 
     # ── TIER 2: STANDARD (60%) ──
+    # Gemini strong + RSI ok (market macro not required)
     if (abs(sentiment) >= 0.5
             and not rsi_counter):
         return {
             'enter': True, 'direction': direction,
             'sizing_factor': min(0.6, mc_sizing * 0.6),
             'tier': 'STANDARD',
-            'reason': f'STD: sent={sentiment:+.2f} rsi={rsi:.0f}',
+            'reason': f'STD: sent={sentiment:+.2f} rsi={rsi:.0f} regime={mkt_regime}',
         }
 
     # ── TIER 3: MOMENTUM (40%) ──
